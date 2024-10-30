@@ -1,0 +1,665 @@
+---
+# ONLY EDIT THE AREAS MARKED [USER INPUT]!!! DO A CTRL+F SEARCH TO FIND ALL THE [USER INPUT] AREAS
+# params: 
+#   sub_title:
+#     input: text
+#     label: Sub Title
+    # value: 'my_Sub_Title_and_File_Name'
+title: "Miseq run 19"     # [USER INPUT] Title of your report
+date: "`r format(Sys.time(), '%B %d, %Y')`" # Automatically populates the date
+author: "Hanshu Yuan "              # [USER INPUT] Author of your report
+output: 
+  html_document:
+    pandoc_args: [
+      "--output=miseq17.html"  #[USER INPUT] !!NO SPACE between "output=" & file path!!
+      ]
+    toc: true
+    toc_float:
+      collapsed: FALSE
+      smooth_scroll: FALSE
+    toc_depth: 3
+    number_sections: true
+    theme: paper
+---
+
+```{r [USER INPUT], eval=TRUE, include=TRUE, echo=FALSE }
+
+# STEP 0: Format your metadata
+ 
+ # Ensure your metadata contains the following columns:
+      # sample_type (contents: "sample", "EC", "PC" or "NC")
+      # project     (contents: project abbreviation or NA)
+      # plate       (contents: plate number e.g.(plate.1, plate.2...))
+      # row         (contents: row on PCR plate (e.g. A, B, C...))
+      # column      (contents: column on PCR plate(e.g. 1, 2, 3...))
+
+
+# STEP 1: Load Your Data
+
+  # Insert the file path to your seqtab, taxa, and metadata.
+
+seqtab <- readRDS("./seqtab.rds") 
+taxa <- readRDS("./taxa.rds") 
+metadata <- read.csv("./meta3.csv", header=TRUE, row.names=1)
+
+common_rows <- intersect(rownames(seqtab), rownames(metadata))
+seqtab <- seqtab[common_rows, , drop = FALSE]
+metadata <- metadata[common_rows, , drop = FALSE]
+all(rownames(seqtab) == rownames(metadata))
+
+# STEP 2: Define Illumina Basespace Information
+
+Q30 <- "88.26"  
+PF <- "85.93" 
+Yield <- "8.37 Gbp"
+
+
+
+# STEP 3: Define Columns to Display on Tables
+
+  # MUST be a list of column names from your metadata 
+  # include all columns with information you want to be displayed on tables
+
+sample_read_counts_table_cols <- c("project", "sample_type", "parent_sample")
+control_read_counts_table_cols <- c("sample_type", "plate", "parent_sample")
+
+
+# STEP 4: Define plotting parameters
+
+  # True or False whether to create these plots 
+      # If you are only looking at a subset of data or a single project,
+        # (not an entire miseq run) then you might want to turn these off.
+create_projects_plots <- TRUE
+create_plate_plots <- TRUE 
+
+  # All MUST be a column name from your metadata 
+x_lab_master_barplot <- "parent_sample"
+x_lab_control_barplot <- "sample_type" 
+x_lab_projects_barplots <- "project"
+x_lab_plate_barplots <- "column"
+
+# STEP 5: Define whether you want all bar plots to show the exact same 25 taxa 
+
+  # Why YES: If you are comparing between plates or projects with similar types 
+        # of samples, you may want consistency for easy viewing.
+  # Why NO: If you have very different sample types with different microbiomes,
+      # (e.g. skin vs stool), allowing the taxa to be different in each plot
+      # will help you see the true composition of these samples.
+
+all_plots_same_taxa <- TRUE
+all_projects_same_taxa <- TRUE        # (TRUE/FALSE)
+all_plates_same_taxa <- TRUE   
+
+
+```
+
+
+
+```{r Setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      cache=FALSE,
+                      message = FALSE)
+```
+
+
+
+```{r Load packages, include=FALSE}
+library(magrittr)
+library(tibble)
+library(ggplot2)
+library(knitr)
+library(phyloseq)
+library(kableExtra)
+library(metagMisc)
+library(microViz)
+library(dplyr)
+library(decontam)
+```
+
+
+
+```{r Define Functions, include=FALSE}
+reads_calc <- function(seqtab, metadata){
+  seqtab_counts <<- seqtab%>%
+    add_column(count=rowSums(seqtab),.before = 1)
+  y <- ncol(metadata)
+  x <- y+1
+ # metadata2 <- metadata[row.names(metadata) %in% row.names(seqtab_counts),]
+  metadata <- metadata[order(row.names(metadata)), ]
+  seqtab_counts <- seqtab_counts[order(row.names(seqtab_counts)), ]
+  metadata <- cbind(metadata, seqtab_counts)
+  meta.counts <<- metadata[,1:x]
+}
+
+# Summary statistics
+stats <- function(data) {
+  stats_sam <- summary(data$count)
+  return(stats_sam)
+}
+
+# histogram of sample read counts
+hist_samples <- function(data) {
+  hist_sam <<- (ggplot(data, aes(count)) + 
+                  geom_histogram(binwidth=1000) +
+                  #scale_x_continuous(trans='log10') +
+                  #scale_x_continuous(breaks=seq(0,100000, 5000)) +
+                  labs(title="Sample Read Counts", y="Number of Samples", x="Read Counts")+
+                  theme(
+                    plot.title = element_text(size=8, hjust=0.5),
+                    axis.text.x = element_text(angle=90, size=8),
+                    axis.text.y = element_text(size=8),
+                    axis.title.y=element_text(size=8),
+                    axis.title.x=element_text(size=8)
+                  ))
+}
+
+# Qingqi's code to tidy taxa:
+tidy_taxa <- function(taxa) {
+  g_taxa=taxa[,-7]
+  for(i in 1:nrow(g_taxa)){
+    for(j in 1:ncol(g_taxa)){
+      tag=switch(j,'k_','p_','c_','o_','f_','g_')
+      if(is.na(g_taxa[i,j])){
+        new_label=paste0(tag,'unclassified_',g_taxa[i,j-1])
+        g_taxa[i,j]=new_label
+      }
+      else{
+        new_label <- paste0(tag, g_taxa[i, j])
+        g_taxa[i, j] <- new_label
+      }
+    }
+  }
+  g_taxa <<- g_taxa
+}
+
+# Fix taxa discrepancies where different ASVs of the same genus have
+  # different families (e.g. Incertae Sedis issue in Run 11)
+fix_taxa_discrep <- function(g_taxa){
+  for (i in 1:6){
+    g_taxa[,i] <- gsub(" ", "_", g_taxa[,i]) 
+  }
+  g_taxa2 <- g_taxa
+  for (i in unique(g_taxa2$Genus)) {
+    gen <- subset(g_taxa2, Genus==i)
+    y <- unique(gen$Family)
+    z <- unique(gen$Order)
+    w <- unique(gen$Class)
+    v <- unique(gen$Phylum)
+    rows.index <- which(g_taxa2$Genus == i)
+    
+    if (length(y) > 1) {
+      true.fam <- y[which.max(tabulate(match(gen$Family, gen)))]
+      rows.to.fix <- gen$Family != true.fam
+      g_taxa2[rows.index,]$Family[rows.to.fix] <- true.fam
+    } 
+    if (length(z) > 1) {
+      true.ord <- z[which.max(tabulate(match(gen$Order, gen)))]
+      rows.to.fix <- gen$Order != true.ord
+      g_taxa2[rows.index,]$Order[rows.to.fix] <- true.ord
+    } 
+    if (length(w) > 1) {
+      true.class <- w[which.max(tabulate(match(gen$Class, gen)))]
+      rows.to.fix <- gen$Class != true.class
+      g_taxa2[rows.index,]$Class[rows.to.fix] <- true.class
+    } 
+    if (length(v) > 1) {
+      true.phy <- v[which.max(tabulate(match(gen$Phylum, gen)))]
+      rows.to.fix <- gen$Phylum != true.phy
+      g_taxa2[rows.index,]$Phylum[rows.to.fix] <- true.phy
+    } 
+  }
+  return(g_taxa2)
+}
+```
+
+
+
+```{r background code, include=FALSE}
+
+# Ensure data is uploaded as data frames
+taxa <- as.data.frame(taxa)
+seqtab <- as.data.frame(seqtab)
+metadata <- as.data.frame(metadata)
+
+# Make sure metadata & seqtab have the same row names
+metadata <- metadata[row.names(metadata) %in% row.names(seqtab),]
+
+# Fix Taxa table if not already fixed (remove species & put next level for NAs)
+if(length(colnames(taxa))==7){
+  g_taxa <- tidy_taxa(taxa)
+} else {
+  g_taxa <- taxa
+}
+
+# Define Taxa Names
+colnames(g_taxa) <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus")
+
+# If any discrepancies among the same genera, align them with the dominant one
+# Also replaces spaces with underscores 
+g_taxa2 <- fix_taxa_discrep(g_taxa)
+
+# Calculate read counts, add a column to metadata with this info
+seqtab_counts <- reads_calc(seqtab, metadata) 
+#write.csv(g_taxa2,"./g_taxa2.csv")
+# Create Phyloseq object
+(phy <-phyloseq(otu_table(as.matrix(seqtab), taxa_are_rows = FALSE),
+                tax_table(as.matrix(g_taxa2)), sample_data(meta.counts)))
+
+# Remove any taxa with zero prevalence
+x <-nrow(seqtab)
+y <- 1/x
+(phy_prev <- phyloseq_filter_prevalence(phy, prev.trh = y)) 
+
+phy_genus = tax_glom(phy_prev, taxrank = "Genus")
+y <- as.data.frame(phy_genus@otu_table)
+colnames(y) <- as.data.frame(phy_genus@tax_table)$Genus
+ysort<-y[, order(colSums(-y))]
+my_taxa <- colnames(ysort)
+
+if (all_plots_same_taxa == TRUE){
+entire_run_taxa <- my_taxa
+projects_taxa <- my_taxa
+plates_taxa <- my_taxa
+} else {
+entire_run_taxa <- sum
+projects_taxa <- sum
+plates_taxa <- sum
+}
+
+if (all_plates_same_taxa == TRUE){
+  plates_taxa <- my_taxa
+} else {
+  plates_taxa <- plates_taxa
+}
+
+if (all_projects_same_taxa == TRUE){
+  projects_taxa <- my_taxa
+} else {
+  projects_taxa <- projects_taxa
+}
+
+```
+
+# Quality Report
+
+## Illumina Statistics
+
+```{r print illumina stats, echo=FALSE}
+rows <- c("Average %Q30", "%PF", "Yield")
+cols <- c(Q30, PF, Yield)
+df <- data.frame(cols)
+row.names(df) <- rows
+colnames(df) <- NULL
+kable(df) %>%
+  kable_minimal(full_width = F, position = "left")
+
+```
+
+## Read Counts
+
+### Histogram 
+
+Distribution of reads among ALL SAMPLES (excluding controls):
+
+```{r histogram, echo=FALSE, fig.align="center", fig.width=4, fig.height=4}
+meta_samples <- subset(meta.counts, sample_type == "sample")
+histogram <- hist_samples(meta_samples)
+histogram
+```
+
+### Summary Statistics 
+
+Here are the **summary statistics** for **all samples** on this sequencing run:
+
+```{r sample summary, echo=FALSE}
+summary <- stats(meta_samples)
+kable(
+  as.array(summary),
+  col.names = c("Statistic", "Reads"),
+  digits = 0,
+  format.args = list(big.mark = ",",
+                     scientific = FALSE)
+) %>%
+  kable_classic_2(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = F,
+    position = "left"
+  ) 
+```
+
+### Under 10k (low)
+
+Samples which had **under 10,000 reads**:
+
+```{r under 10k, echo=FALSE}
+# under_10k(seqtab_counts)
+metasub <-
+  subset(meta.counts, count < 10000 & sample_type == "sample")
+metasub <- metasub %>% arrange(count)
+kable(
+  metasub[, c("count", sample_read_counts_table_cols)],
+  digits = 0,
+  format.args = list(big.mark = ",",
+                     scientific = FALSE)
+) %>%
+  kable_classic_2(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = F,
+    position = "left"
+  )
+```
+
+**`r toString(nrow(metasub))` samples** had **less than 10,000 reads**.
+
+### Over 100k (high)
+
+Samples which had **over 100,000 reads**:
+
+```{r over 10k, echo=FALSE}
+metasub <-
+  subset(meta.counts, count > 100000 & sample_type == "sample")
+metasub <- metasub %>% arrange(count)
+kable(
+  metasub[, c("count", sample_read_counts_table_cols)],
+  digits = 0,
+  format.args = list(big.mark = ",",
+                     scientific = FALSE)
+) %>%
+  kable_classic_2(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = F,
+    position = "left"
+  ) 
+```
+
+**`r toString(nrow(metasub))` samples** had **over 100,000 reads**.
+
+
+### Controls
+
+Read counts for **all controls**:
+
+```{r control reads, echo=FALSE}
+metasub <- subset(meta.counts, sample_type!="sample")
+metasub <- metasub %>% arrange(sample_type)
+kable(metasub[,c("count", control_read_counts_table_cols)], digits=0, format.args = list(big.mark = ",", 
+  scientific = FALSE)) %>%
+  kable_classic_2(bootstrap_options = c("striped", "hover", "condensed"), full_width = F, position = "left")
+```
+
+## Taxonomy
+
+### Entire Run
+
+```{r barplot, echo=FALSE, fig.dim=c(20,8)}
+  data <- as.data.frame(phy_prev@sam_data)
+  data <- data[order(data$plate, data$row, data$column),]
+  order <- row.names(data)
+   
+# metaord <- metadata[order(row.names(metadata)),]
+# order <- row.names(metaord)
+(
+  bar1 <- phy_prev %>%
+    ps_mutate(sample_type.project = paste0(
+      as.character(sample_type), ".", as.character(project)
+    )) %>%
+    comp_barplot(
+      tax_order = entire_run_taxa,
+      tax_level = "Genus",
+      n_taxa = 24,
+      label = x_lab_master_barplot,
+      sample_order = order
+    ) +
+    geom_bar(stat = "identity") +
+    guides(fill = guide_legend(
+      reverse = TRUE,
+      keywidth = 0.4,
+      keyheight = 0.4,
+      ncol = 5
+    )) +
+    labs(title = "All Samples", y = "Relative Abundance", fill = "Genus") +
+    theme_bw() +
+    theme(
+      plot.title = element_text(hjust = 0.5, size = 15),
+      axis.text.x = element_blank(),
+      #axis.text.x = element_text(face = "bold",
+      #  size = 8,
+    #    vjust = 0,
+    #    colour = 1,
+    #    angle = 90
+     # ), 
+      axis.text.y = element_text(size = 12,face="bold", colour = 1),
+      axis.title.x = element_text(size = 12, colour = 1),
+      axis.title.y = element_text(size = 12),
+      legend.text = element_text(size = 12,face = "bold"),
+      legend.title = element_blank(),
+      legend.position = "bottom"
+    )
+)
+```
+
+
+### Controls
+
+```{r subset, include=FALSE}
+physub <- subset_samples(phy_prev, sample_type!="sample")
+  data <- as.data.frame(physub@sam_data)
+  data <- data[order(data$plate, data$row, data$column),]
+  order <- row.names(data)
+```
+
+```{r controls barplot, echo=FALSE, fig.dim=c(16,8)}
+(
+  bar1 <- physub %>%
+    comp_barplot(
+      tax_order = sum,
+      tax_level = "Genus",
+      n_taxa = 24,
+      label = x_lab_control_barplot,
+      sample_order=order
+    ) +
+    facet_grid( ~ plate, scales = "free", space = "free") +
+    geom_bar(stat = "identity") +
+    guides(fill = guide_legend(
+      reverse = TRUE,
+      keywidth = 0.4,
+      keyheight = 0.4,
+      ncol = 4
+    )) +
+    labs(title = "All Controls", y = "Relative Abundance", fill = "Genus") +
+    theme_bw() +
+    theme(
+      plot.title = element_text(hjust = 0.5, size = 15),
+      axis.text.x = element_text(
+        size = 8,
+        vjust = 0,
+        colour = 1,
+        angle = 90
+      ),
+      axis.text.y = element_text(size = 12, colour = 1),
+      axis.title.x = element_text(size = 12, colour = 1),
+      axis.title.y = element_text(size = 12),
+      legend.text = element_text(size = 12,face = "bold"),
+      legend.title = element_blank(),
+      legend.position = "bottom"
+    )
+)
+```
+
+
+### By Project
+
+Now we will evaluate the top 25 genera across each project presented in the data set.
+
+```{r get projects, echo=FALSE}
+projects <-
+  unique(metadata$project) # get the list of different projects
+NAs <- is.na(projects)
+if (any(NAs)) {
+  projects <- projects[!NAs]
+} else {
+  projects <- projects
+}
+```
+
+There are **`r length(projects)` projects** represented in the data set. For each project, we have presented the compositional stacked bar plot and a list of the top 25 taxa.
+
+```{r project plots & genus, echo=FALSE, fig.dim=c(14,8)}
+if (create_projects_plots == TRUE){
+for (i in projects) {
+  physub <- subset_samples(phy_prev, project==i)
+  data <- as.data.frame(physub@sam_data)
+  data <- data[order(data$plate, data$row, data$column),]
+  # well <- physub@sam_data$well
+  order <- row.names(data)
+  # well <- physub@sam_data$well
+  # Samples <- sample_names(physub@sam_data)
+  # df <- data.frame(Samples, well)
+  # df_sort <- df[order(well),]
+  # order <- df_sort$Samples
+
+  print(physub %>%
+   comp_barplot(
+     tax_level = "Genus", 
+     tax_order = projects_taxa,
+     n_taxa = 24,
+     label = x_lab_master_barplot, #x_lab_projects_barplots
+    sample_order = order) + 
+   geom_bar(stat = "identity") +
+   guides(fill = guide_legend(reverse = TRUE, keywidth = 0.4, keyheight = 0.4, ncol=4)) +
+   labs(title=i, y= "Relative Abundance", fill = "Genus") +
+   theme_bw() +
+   theme(plot.title = element_text(hjust=0.5, size = 15),
+         axis.text.x = element_text(size = 12, vjust=0, colour=1, angle=90),
+         axis.text.y = element_text(size = 12, colour=1),
+         axis.title.x = element_text(size = 12, colour=1),
+         axis.title.y = element_text(size=12),
+         legend.text = element_text(size = 12,face = "bold"),
+         legend.title = element_blank(),
+         legend.position = "bottom"
+   ))
+}
+}
+```
+
+### By 96 Well Plate
+
+Here are each of the 96-well plates from this run, displayed in order. This is helpful to identify patterns in contamination, such as contamination across rows or columns.
+
+```{r get 96 well plates, fig.height=13, fig.width=12, echo=FALSE}
+#if (create_plate_plots == TRUE){
+#plates <- unique(metadata$plate) # get the list of different plates
+#for (i in plates) {
+  #physub <- subset_samples(phy_prev, plate==i)
+ # data <- as.data.frame(physub@sam_data)
+#  data <- data[order(data$row, data$column),]
+
+  #order <- row.names(data)
+
+
+  #print(physub %>%
+  #   comp_barplot(
+  #   tax_level = "Genus", 
+  #   tax_order = plates_taxa,
+  #   n_taxa = 24,
+  #   label = x_lab_plate_barplots,  
+  #   sample_order=order) +
+  #  geom_bar(stat = "identity") +
+  #  facet_wrap(~row,scales="free", nrow=8, strip.position="left")+
+   #guides(fill = guide_legend(reverse = FALSE, keywidth = 0.4, keyheight = 0.4, ncol=1)) +
+   #labs(title=i, y= "Relative Abundance", fill = "Genus") +
+   #theme_bw() +
+   #theme(plot.title = element_text(hjust=0.5, size = 15),
+        #  axis.text.y = element_text(size = 12, colour=1),
+      #   axis.title.x = element_text(size = 15, colour=1),
+     #    axis.title.y = element_text(size=12),
+    #     legend.text = element_text(size = 15,face = "bold"),
+   #      legend.title = element_blank(),
+  #       legend.position = "right"
+ #  ))
+#}
+#}
+```
+
+# All Reads
+
+Here are the read counts for every sample on the current sequencing run, including samples and controls. Additionally, we list the sample type and project associated with each sample.
+
+```{r all reads, echo=FALSE}
+knitr::kable(meta.counts[, c("count", sample_read_counts_table_cols)], format.args =
+               list(big.mark = ",",
+                    scientific = FALSE)) %>%
+  kable_classic_2(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = F,
+    position = "left"
+  ) %>% kableExtra::scroll_box(height = "300px", fixed_thead = TRUE)
+```
+
+# Decontam Report
+
+Identify potential contaminants based on the "prevalence" method 
+in the Decontam package.
+
+```{r decontam, echo=FALSE}
+#phygenus <- tax_glom(phy, taxrank="Genus")
+ps <- phy
+sample_data(ps)$is.neg <-
+  sample_data(ps)$sample_type %in% c("EC", "NC")
+contamdf.prev05 <-
+  isContaminant(ps,
+                method = "prevalence",
+                neg = "is.neg",
+                threshold = 0.1)
+table(contamdf.prev05$contaminant)
+
+# Make phyloseq object of presence-absence in negative controls and true samples
+ps.pa <- transform_sample_counts(ps, function(abund)
+  1 * (abund > 0))
+ps.pa.neg <-
+  prune_samples(sample_data(ps.pa)$sample_type %in% c("EC", "NC"), ps.pa)
+ps.pa.pos <-
+  prune_samples(sample_data(ps.pa)$sample_type %in% c("sample", "PC"), ps.pa)
+# Make data.frame of prevalence in positive and negative samples
+df.pa <-
+  data.frame(
+    pa.pos = taxa_sums(ps.pa.pos),
+    pa.neg = taxa_sums(ps.pa.neg),
+    contaminant = contamdf.prev05$contaminant
+  )
+
+genus_list <- c()
+for (i in 1:nrow(df.pa)) {
+  ASV <- row.names(df.pa)[i]
+  genus <- g_taxa2[ASV, ]$Genus
+  genus_list <- append(genus, genus_list)
+}
+df.pa$Genus <- genus_list
+
+ggplot(data = df.pa, aes(x = pa.neg, y = pa.pos, color = contaminant)) + geom_point() +
+  xlab("Prevalence (EC & NC)") + ylab("Prevalence (PC & Samples)")
+
+df.print <- subset(df.pa, contaminant == "TRUE")
+df.print <- df.print %>% dplyr::relocate(Genus)
+df.print <- df.print[order(df.print$Genus, decreasing = FALSE), ]
+df.print$ASV <- row.names(df.print)
+row.names(df.print) <- NULL
+
+kable(
+  df.print,
+  row.names = FALSE,
+  format.args =
+    list(big.mark = ",",
+         scientific = FALSE)
+) %>%
+  kable_classic_2(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = TRUE,
+    position = "left"
+  ) %>%
+  column_spec(1, width = "15em") %>%  # Adjust the width as needed
+  kableExtra::scroll_box(height = "300px", fixed_thead = TRUE)
+
+
+```
+
