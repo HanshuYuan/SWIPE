@@ -1,0 +1,294 @@
+---
+title: "16S"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+library(magrittr)
+library(tibble)
+library(ggplot2)
+library(knitr)
+library(phyloseq)
+library(kableExtra)
+library(metagMisc)
+library(microViz)
+library(dplyr)
+library(decontam)
+library(ggpubr)
+library(vegan)
+library(reshape2)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE,include=FALSE}
+seqtab=readRDS("~/OneDrive - UConn Health Center/SWIPE/seqtab.rds")
+taxa=read.csv("~/OneDrive - UConn Health Center/SWIPE/g_taxa2.csv",row.names = 1)
+
+metadata=read.csv("~/OneDrive - UConn Health Center/SWIPE/meta4.csv",row.names = 1)
+
+common_rows <- intersect(rownames(seqtab), rownames(metadata))
+seqtab <- seqtab[common_rows, , drop = FALSE]
+metadata <- metadata[common_rows, , drop = FALSE]
+all(rownames(seqtab) == rownames(metadata))
+
+```
+
+
+
+```{r,echo=FALSE}
+
+
+
+
+(phy <-phyloseq(otu_table(as.matrix(seqtab), taxa_are_rows = FALSE),
+                tax_table(as.matrix(taxa)), sample_data(metadata)))
+x <-nrow(seqtab)
+y <- 1/x
+(phy_prev <- phyloseq_filter_prevalence(phy, prev.trh = y)) 
+
+#select=c("Larynx", "Middle Ear","Outer Ear","Sinus","Tonsils")
+
+phy_prev1=subset_samples(physeq = phy_prev,Sample=="sample")
+phy_prev1
+
+phy_genus = tax_glom(phy_prev1, taxrank = "Genus")
+y <- as.data.frame(phy_genus@otu_table)
+colnames(y) <- as.data.frame(phy_genus@tax_table)$Genus
+#phy_prev2=subset_samples(physeq = phy_prev1,DNALater=="DNAL")
+#phy_prev2
+#se <- c("T1","T2"," T3")
+#phy_prev2 <- subset_samples(physeq = phy_prev1, Timepoint %in% se)
+
+```
+
+```{r}
+
+
+less10k=subset(y,rowSums(y)<10000)
+great10k=subset(y,rowSums(y)>=10000)
+less500=subset(less10k,rowSums(less10k)<500)
+df.r=rrarefy(great10k,10000)
+less10k=less10k[!rownames(less10k)%in%rownames(less500),]
+data_new=rbind(less10k,df.r)
+data_new=data_new%>%
+  add_column(ID1=rownames(data_new),.before = 1)
+metadata=metadata%>%
+  add_column(ID1=rownames(metadata),.before = 1)
+data_new1=merge(data_new,metadata[,c(1,10)])
+name=c("g_Caldalkalibacillus","g_Nesterenkonia","g_Brevibacterium","g_Halomonas")
+data_new1=data_new1[,!colnames(data_new1)%in%name]
+
+data_P1=data_new1[grepl("P1",data_new1$Person),]
+data_P2=data_new1[grepl("P2",data_new1$Person),]
+rownames(data_P1)=data_P1$ID1
+rownames(data_P2)=data_P2$ID1
+data_P1$ID1=NULL
+data_P1$Person=NULL
+
+reab1=prop.table(as.matrix(data_P1),1)*100
+meanP1=apply(reab1,2,mean)
+meanP1=as.data.frame(meanP1)
+colnames(meanP1)=paste("ra",sep = "")
+meanP1$name=rownames(meanP1)
+meanP1_2=meanP1[order(meanP1$ra,decreasing = T),]
+meanP1_2=as.data.frame(meanP1_2)
+
+data_P2$ID1=NULL
+data_P2$Person=NULL
+
+reab2=prop.table(as.matrix(data_P2),1)*100
+meanP2=apply(reab2,2,mean)
+meanP2=as.data.frame(meanP2)
+colnames(meanP2)=paste("ra",sep = "")
+meanP2$name=rownames(meanP2)
+meanP2_2=meanP2[order(meanP2$ra,decreasing = T),]
+meanP2_2=as.data.frame(meanP2_2)
+
+
+#name_0.1=meanP1_2[meanP1_2$ra>0.1,]
+top25_P1=meanP1_2$name[1:25]
+#top25 <- top25[top25 != "g_Caldalkalibacillus"]
+dataP1=as.data.frame(reab1)
+dataP1_1=dataP1[,colnames(dataP1)%in%top25_P1]
+dataP1_1=dataP1_1[,top25_P1]
+dataP1_1$Others=rowSums(dataP1[,!colnames(dataP1)%in%top25_P1])
+#rowSums(data1)
+
+
+top25_P2=meanP2_2$name[1:25]
+#top25 <- top25[top25 != "g_Caldalkalibacillus"]
+dataP2=as.data.frame(reab2)
+dataP2_1=dataP2[,colnames(dataP2)%in%top25_P2]
+dataP2_1=dataP2_1[,top25_P2]
+dataP2_1$Others=rowSums(dataP2[,!colnames(dataP2)%in%top25_P2])
+
+```
+
+```{r}
+meta2=read.csv("~/OneDrive - UConn Health Center/SWIPE/meta1.csv",row.names = 1)
+meta2.1=meta2[!grepl("Neg Swipe",meta2$Timepoint),]
+dataP1_1=dataP1_1%>%
+  add_column(ID=rownames(dataP1_1),.before = 1)
+dataP2_1=dataP2_1%>%
+  add_column(ID=rownames(dataP2_1),.before = 1)
+datanewP1=merge(meta2.1,dataP1_1,by="ID")
+datanewP2=merge(meta2.1,dataP2_1,by="ID")
+rownames(datanewP1)=datanewP1$ID
+rownames(datanewP2)=datanewP2$ID
+
+```
+
+```{r}
+datanewP1_1=datanewP1[,-c(1:4,6:11)]
+datanewP2_1=datanewP2[,-c(1:4,6:11)]
+
+d1.2=melt(datanewP1_1)
+
+
+COLORS = c("#00FFFF", "#000000", "#0000FF", "#FF00FF", "#778899", "#008000", "#800000", "#32CD32","#87CEFA", "#808000", "#800080", "#ff0000", "#C0C0C0", "#008080", "#FF6347", "#FFFF00","#7CFC00", "#000080", "#FFD700", "#1E90FF", "#F778A1", "#A0522D", "#E0B0FF", "#493D26","#FFA62F","#0080FF","#FF4500","#8A2BE2",
+           "#7FFF00" ,"#DC143C","#FF1493","#00FA9A")
+
+pdf3=ggplot(d1.2,aes(x=name,y=value,fill=variable))+
+  geom_bar(stat = "identity")+
+  facet_grid(Method~Timepoint, scales = "free_x")+ scale_fill_manual(values=COLORS)+
+  theme(axis.title.x = element_text(size = 15,face = "bold"),
+        #panel.background = element_blank(),
+        axis.line = element_blank(),
+        axis.text.x = element_text(size = 25,angle=-90,face = "bold", vjust=1),
+        axis.text.y = element_text(size = 25,face = "bold"),
+        axis.title.y = element_text(size = 25,face = "bold"),#"legend.position = c(0.69, 0.78)"
+        legend.text = element_text(size = 10,face = "bold"),
+        legend.title = element_blank(),
+        axis.title.x.bottom = element_blank(),
+        strip.text.x = element_text(size = 25,face = "bold"),
+        strip.text.y = element_text(size = 25,face = "bold"))+ylab("% Relative of Abundance")
+pdf3
+ggsave("barPerson1_new.png",plot = pdf3,path = "~/OneDrive - UConn Health Center/SWIPE/output/",
+       width = 15,height = 15,dpi = 320)
+
+
+
+```
+
+```{r}
+
+
+d1.3=melt(datanewP2_1)
+
+
+COLORS = c("#00FFFF", "#000000", "#0000FF", "#FF00FF", "#778899", "#008000", "#800000", "#32CD32","#87CEFA", "#808000", "#800080", "#ff0000", "#C0C0C0", "#008080", "#FF6347", "#FFFF00","#7CFC00", "#000080", "#FFD700", "#1E90FF", "#F778A1", "#A0522D", "#E0B0FF", "#493D26","#FFA62F","#0080FF","#FF4500","#8A2BE2",
+           "#7FFF00" ,"#DC143C","#FF1493","#00FA9A")
+
+pdf3=ggplot(d1.3,aes(x=name,y=value,fill=variable))+
+  geom_bar(stat = "identity")+
+  facet_grid(Method~Timepoint, scales = "free_x")+ scale_fill_manual(values=COLORS)+
+  theme(axis.title.x = element_text(size = 15,face = "bold"),
+        #panel.background = element_blank(),
+        axis.line = element_blank(),
+        axis.text.x = element_text(size = 25,angle=-90,face = "bold", vjust=1),
+        axis.text.y = element_text(size = 25,face = "bold"),
+        axis.title.y = element_text(size = 25,face = "bold"),#"legend.position = c(0.69, 0.78)"
+        legend.text = element_text(size = 10,face = "bold"),
+        legend.title = element_blank(),
+        axis.title.x.bottom = element_blank(),
+        strip.text.x = element_text(size = 25,face = "bold"),
+        strip.text.y = element_text(size = 25,face = "bold"))+ylab("% Relative of Abundance")
+pdf3
+ggsave("barPerson2_new.png",plot = pdf3,path = "~/OneDrive - UConn Health Center/SWIPE/output/",
+       width = 15,height = 15,dpi = 320)
+```
+
+```{r}
+richness_p1=specnumber(data_P1)
+diversity_p1=diversity(data_P1)
+richness_p2=specnumber(data_P2)
+diversity_p2=diversity(data_P2)
+```
+
+```{r}
+datanewP1_1$Diversity=diversity_p1
+datanewP1_1$Richness=richness_p1
+datanewP2_1$Diversity=diversity_p2
+datanewP2_1$Richness=richness_p2
+dnew1=melt(datanewP1_1[,c(1:5,32)])
+dnew1$Person="P1"
+
+dnew2=melt(datanewP2_1[,c(1:5,32)])
+dnew2$Person="P2"
+dnew=rbind(dnew1,dnew2)
+  
+COLORS <- c("P1" = "red", "P2" = "blue")  # add colors as needed
+
+pdf3 <- ggplot(dnew, aes(x = name, y = value, color = Person)) +  # use color instead of fill
+  geom_point(size=12) +
+  facet_grid(Method ~ Timepoint, scales = "free_x") +
+  scale_fill_manual(values = COLORS) +  # use scale_color_brewer instead of scale_fill_brewer
+  theme(
+    axis.title.x = element_text(size = 15, face = "bold"),
+    axis.line = element_blank(),
+    axis.text.x = element_text(size = 25, angle = -90, face = "bold", vjust = 1),
+    axis.text.y = element_text(size = 25, face = "bold"),
+    axis.title.y = element_text(size = 25, face = "bold"),
+    legend.text = element_text(size = 20, face = "bold"),
+    legend.title = element_blank(),
+    axis.title.x.bottom = element_blank(),
+    strip.text.x = element_text(size = 25, face = "bold"),
+    strip.text.y = element_text(size = 25, face = "bold")
+  ) +
+  ylab("Diversity")
+
+pdf3
+ggsave("Diversity_new.png",plot = pdf3,path = "~/OneDrive - UConn Health Center/SWIPE/output/",
+       width = 15,height = 15,dpi = 320)
+```
+
+```{r}
+
+dnew1=melt(datanewP1_1[,c(1:5,33)])
+dnew1$Person="P1"
+
+dnew2=melt(datanewP2_1[,c(1:5,33)])
+dnew2$Person="P2"
+dnew=rbind(dnew1,dnew2)
+  
+COLORS <- c("P1" = "red", "P2" = "blue")  # add colors as needed
+
+pdf3 <- ggplot(dnew, aes(x = name, y = value, color = Person)) +  # use color instead of fill
+  geom_point(size=12) +
+  facet_grid(Method ~ Timepoint, scales = "free_x") +
+  scale_fill_manual(values = COLORS) +  # use scale_color_brewer instead of scale_fill_brewer
+  theme(
+    axis.title.x = element_text(size = 15, face = "bold"),
+    axis.line = element_blank(),
+    axis.text.x = element_text(size = 25, angle = -90, face = "bold", vjust = 1),
+    axis.text.y = element_text(size = 25, face = "bold"),
+    axis.title.y = element_text(size = 25, face = "bold"),
+    legend.text = element_text(size = 20, face = "bold"),
+    legend.title = element_blank(),
+    axis.title.x.bottom = element_blank(),
+    strip.text.x = element_text(size = 25, face = "bold"),
+    strip.text.y = element_text(size = 25, face = "bold")
+  ) +
+  ylab("Richness")
+
+pdf3
+ggsave("Richness_new.png",plot = pdf3,path = "~/OneDrive - UConn Health Center/SWIPE/output/",
+       width = 15,height = 15,dpi = 320)
+
+```
+
+
+
